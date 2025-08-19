@@ -1,0 +1,11 @@
+#!/usr/bin/env bpftrace
+
+tracepoint:syscalls:sys_enter_read {
+	@start[tid] = nsecs;
+}
+
+tracepoint:syscalls:sys_exit_read /@start[tid]/ {
+	@duration[comm] += nsecs - @start[tid];
+	delete(@start, tid);
+}
+

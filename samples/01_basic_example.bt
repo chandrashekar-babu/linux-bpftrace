@@ -1,0 +1,16 @@
+#!/usr/bin/env bpftrace
+
+BEGIN {
+   printf("Tracing open syscalls... Hit Ctrl-c to Stop.\n");
+}
+
+tracepoint:syscalls:sys_enter_open,
+tracepoint:syscalls:sys_enter_openat,
+tracepoint:syscalls:sys_enter_openat2 {
+	printf("%-6d %-16s %s\n", pid, comm, str(args.filename));
+}
+
+END {
+	printf("Completed.\n");
+}
+

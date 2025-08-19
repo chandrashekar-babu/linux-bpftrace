@@ -1,0 +1,6 @@
+#!/usr/bin/env bpftrace
+
+uprobe:libc:malloc {
+	@allocs[comm] = lhist(arg0, 128, 8192, 128);
+}
+

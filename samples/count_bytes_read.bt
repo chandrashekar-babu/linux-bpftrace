@@ -1,0 +1,7 @@
+#!/usr/bin/env bpftrace
+
+tracepoint:syscalls:sys_exit_read,
+tracepoint:syscalls:sys_exit_readv /pid == $1 && args->ret >= 0/ {
+	@nbytes += args->ret;
+}
+
