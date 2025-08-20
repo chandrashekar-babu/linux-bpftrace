@@ -1,0 +1,57 @@
+#!/usr/bin/env bpftrace
+
+
+// syscall_analyzer.bt - Analyzes syscall patterns with detailed metrics
+
+BEGIN {
+   printf("Starting syscall analysis...\n");
+   @start_time = nsecs;
+}
+
+tracepoint:syscalls:sys_enter_* {
+   @syscalls_total++;
+   @syscalls_by_proc[comm] += 1;
+   @syscalls_by_type[probe] += 1;
+
+   // Track start time for latency calculation
+   @start[tid, probe] = nsecs;
+}
+
+tracepoint:syscalls:sys_exit_* /@start[tid, strcat("tracepoint:syscalls:sys_enter_", 
+                   substr(probe, sizeof("tracepoint:syscalls:sys_exit_") - 1))]/ {
+ 
+   $syscall = substr(probe, sizeof("tracepoint:syscalls:sys_exit_") - 1);
+   $entry_probe = strcat("tracepoint:syscalls:sys_enter_", $syscall);
+   $latency = nsecs - @start[tid, $entry_probe];
+ 
+   // Record latency histogram
+   @syscall_latency[$syscall] = hist($latency);
+ 
+   // Track errors
+   if (args->ret < 0) {
+      @errors[$syscall, - args->ret] += 1;
+   }
+ 
+   delete(@start[tid, $entry_probe]);
+}
+
+interval:s:10 {
+   printf("\n=== Syscall Statistics (10s interval) ===\n");
+   printf("Total syscalls: %d\n", @syscalls_total);
+   printf("\nTop 10 processes by syscall count:\n");
+   print(@syscalls_by_proc, 10);
+   printf("\nTop 10 syscall types:\n");
+   print(@syscalls_by_type, 10);
+   printf("\nError counts by syscall and errno:\n");
+   print(@errors);
+   clear(@syscalls_total);
+   clear(@syscalls_by_proc);
+   clear(@syscalls_by_type);
+   clear(@errors);
+}
+
+END {
+   printf("\n=== Final Latency Histograms ===\n");
+   print(@syscall_latency);
+   printf("\nTotal runtime: %.2f seconds\n", (nsecs - @start_time) / 1000000000);
+}

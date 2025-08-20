@@ -1,0 +1,52 @@
+#!/usr/bin/env bpftrace
+
+BEGIN {
+  printf("Tracing scheduler latency... Press Ctrl-C to end.\n");
+}
+
+// Track when tasks are woken up (become runnable)
+tracepoint:sched:sched_wakeup,
+tracepoint:sched:sched_wakeup_new {
+  // Store wake-up time and the CPU that did the wakeup
+  @wakeup[args->pid] = nsecs;
+  @waker[args->pid] = cpu;
+  @task_comm[args->pid] = args->comm;
+}
+
+// Track when tasks are actually scheduled
+tracepoint:sched:sched_switch {
+  $next_pid = args->next_pid;
+  $ts = @wakeup[$next_pid];
+  
+  if ($ts) {
+    $delay = nsecs - $ts;
+    $comm = @task_comm[$next_pid];
+    
+    // Record detailed stats for delays > 5ms
+    if ($delay > 5000000) {
+      $waker_cpu = @waker[$next_pid];
+      printf("Latency %10.3f ms for %s [%d]: waker CPU %d, current CPU %d\n",
+             $delay / 1000000, $comm, $next_pid, $waker_cpu, cpu);
+      
+      // Was it scheduled on the same CPU that woke it?
+      @cross_cpu[$waker_cpu != cpu] = count();
+    }
+    
+    // Build latency histograms by process
+    @latency_us[$comm] = hist($delay / 1000);
+    
+    // Clear the tracking maps
+    delete(@wakeup[$next_pid]);
+    delete(@waker[$next_pid]);
+    delete(@task_comm[$next_pid]);
+  }
+}
+
+END {
+  printf("Scheduler latency histograms by process (microseconds):\n");
+  print(@latency_us);
+  
+  printf("\nCross-CPU scheduling events (potential NUMA effects):\n");
+  print(@cross_cpu);
+}
+

@@ -1,0 +1,59 @@
+#!/usr/bin/env bpftrace
+
+BEGIN {
+  printf("Tracing file operations... Press Ctrl-C to end.\n");
+}
+
+// Track file opens
+tracepoint:syscalls:sys_enter_open,
+tracepoint:syscalls:sys_enter_openat {
+  $filename = str(args->filename);
+  
+  // Skip temporary and system files
+  if ($filename != "" && 
+      strncmp($filename, "/proc", 5) != 0 && 
+      strncmp($filename, "/sys", 4) != 0 && 
+      strncmp($filename, "/dev", 4) != 0) {
+    
+    printf("%s opened %s\n", comm, $filename);
+    @opens[comm, $filename] = count();
+    
+    // Store the name for lookup on file descriptor ops
+    @fdnames[pid, args->fd] = $filename;
+  }
+}
+
+// Track file reads
+tracepoint:syscalls:sys_exit_read /args->ret > 0/ {
+  $name = @fdnames[pid, args->fd];
+  if ($name != "") {
+    @read_bytes[$name, comm] = sum(args->ret);
+    @read_calls[$name, comm] = count();
+  }
+}
+
+// Track file writes
+tracepoint:syscalls:sys_exit_write /args->ret > 0/ {
+  $name = @fdnames[pid, args->fd];
+  if ($name != "") {
+    @write_bytes[$name, comm] = sum(args->ret);
+    @write_calls[$name, comm] = count();
+  }
+}
+
+// Clean up on file close
+tracepoint:syscalls:sys_enter_close {
+  delete(@fdnames[pid, args->fd]);
+}
+
+END {
+  printf("Files opened:\n");
+  print(@opens);
+  
+  printf("\nBytes read by file:\n");
+  print(@read_bytes);
+  
+  printf("\nBytes written by file:\n");
+  print(@write_bytes);
+}
+

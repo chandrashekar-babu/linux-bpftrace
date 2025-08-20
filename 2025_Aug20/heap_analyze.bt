@@ -1,0 +1,39 @@
+#!/usr/bin/env bpftrace
+
+// Comprehensive heap analysis for process $1
+
+// libc malloc/free function addresses - adjust for your system
+BEGIN {
+  printf("Tracing heap activity for PID %d\n", $1);
+}
+
+// Track malloc calls
+uprobe:libc:malloc /pid == $1/ {
+  @malloc_sizes = hist(arg0);            // Histogram of allocation sizes
+  @malloc_stack[ustack] = count();       // Stack traces of allocations
+  @bytes_allocated += arg0;              // Running total
+  @malloc_calls++;                       // Count total calls
+}
+
+// Track free calls
+uprobe:libc:free /pid == $1/ {
+  @free_calls++;
+}
+
+// Print summary every 10 seconds
+interval:s:10 {
+  time("%H:%M:%S Heap stats:\n");
+  printf("Total malloc calls: %d\n", @malloc_calls);
+  printf("Total free calls: %d\n", @free_calls);
+  printf("Current difference: %d\n", @malloc_calls - @free_calls);
+  printf("Estimated heap bytes: %d\n", @bytes_allocated);
+}
+
+END {
+  printf("Allocation size distribution:\n");
+  print(@malloc_sizes);
+  
+  printf("Top allocation stack traces:\n");
+  print(@malloc_stack, 10);
+}
+

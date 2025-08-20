@@ -1,0 +1,71 @@
+#!/usr/bin/env bpftrace
+
+// failedaccess.bt - Track all failed file access attempts
+
+BEGIN {
+ printf("Tracing failed file access attempts... Hit Ctrl-C to end.\n\n");
+ 
+ // Define common errno values and their meanings
+ @errors[1] = "EPERM: Operation not permitted";
+ @errors[2] = "ENOENT: No such file or directory";
+ @errors[3] = "ESRCH: No such process";
+ @errors[4] = "EINTR: Interrupted system call";
+ @errors[5] = "EIO: I/O error";
+ @errors[6] = "ENXIO: No such device or address";
+ @errors[13] = "EACCES: Permission denied";
+ @errors[17] = "EEXIST: File exists";
+ @errors[24] = "EMFILE: Too many open files";
+}
+
+// Track filenames for opens
+tracepoint:syscalls:sys_enter_open,
+tracepoint:syscalls:sys_enter_openat {
+ @filename[tid] = str(args->filename);
+}
+
+// Track failed opens
+tracepoint:syscalls:sys_exit_open,
+tracepoint:syscalls:sys_exit_openat /@filename[tid] && args->ret < 0/ {
+ $errno = - args->ret;
+ $error_msg = @errors[$errno] ? @errors[$errno] : str($errno);
+ 
+ printf("%-16s %-6d %-6d FAILED OPEN: %s (%s)\n", 
+ comm, pid, tid, @filename[tid], $error_msg);
+ 
+ // Collect statistics
+ @fails_by_process[comm] += 1;
+ @fails_by_file[@filename[tid]] += 1;
+ @fails_by_error[$error_msg] += 1;
+ 
+ delete(@filename[tid]);
+}
+
+// Track failed reads
+kretprobe:vfs_read /retval < 0/ {
+ $file = (struct file *)arg0;
+ $dentry = $file->f_path.dentry;
+ $filename = str($dentry->d_name.name);
+ $errno = - retval;
+ $error_msg = @errors[$errno] ? @errors[$errno] : str($errno);
+ 
+ printf("%-16s %-6d %-6d FAILED READ: %s (%s)\n", 
+ comm, pid, tid, $filename, $error_msg);
+ 
+ @fails_by_process[comm] += 1;
+ @fails_by_file[$filename] += 1;
+ @fails_by_error[$error_msg] += 1;
+}
+
+// Print summary on exit
+END {
+ printf("\n=== Summary ===\n");
+ printf("\nFailures by process:\n");
+ print(@fails_by_process);
+ 
+ printf("\nFailures by file:\n");
+ print(@fails_by_file);
+ 
+ printf("\nFailures by error:\n");
+ print(@fails_by_error);
+}
+

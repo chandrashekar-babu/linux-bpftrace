@@ -1,0 +1,72 @@
+#!/usr/bin/env bpftrace
+
+// vfsstat.bt - VFS operation statistics
+//
+// This script provides statistics on VFS (Virtual File System) operations,
+// showing counts and latencies for the main VFS operations.
+
+BEGIN {
+ printf("Tracing VFS operations... Hit Ctrl-C to end.\n");
+ // Track operation start time
+}
+
+kprobe:vfs_read,
+kprobe:vfs_write,
+kprobe:vfs_fsync,
+kprobe:vfs_open,
+kprobe:vfs_create {
+ @start[tid] = nsecs;
+ @counts[probe] += 1;
+}
+
+kretprobe:vfs_read /@start[tid]/ {
+ @read_ns = hist(nsecs - @start[tid]);
+ @totals["read"] += nsecs - @start[tid];
+ delete(@start[tid]);
+}
+
+kretprobe:vfs_write /@start[tid]/ {
+ @write_ns = hist(nsecs - @start[tid]);
+ @totals["write"] += nsecs - @start[tid];
+ delete(@start[tid]);
+}
+
+kretprobe:vfs_fsync /@start[tid]/ {
+ @fsync_ns = hist(nsecs - @start[tid]);
+ @totals["fsync"] += nsecs - @start[tid];
+ delete(@start[tid]);
+}
+
+kretprobe:vfs_open /@start[tid]/ {
+ @open_ns = hist(nsecs - @start[tid]);
+ @totals["open"] += nsecs - @start[tid];
+ delete(@start[tid]);
+}
+
+kretprobe:vfs_create /@start[tid]/ {
+ @create_ns = hist(nsecs - @start[tid]);
+ @totals["create"] += nsecs - @start[tid];
+ delete(@start[tid]);
+}
+
+interval:s:5 {
+ time("%H:%M:%S\n");
+ print(@counts);
+ printf("\nOperation totals (nanoseconds):\n");
+ print(@totals);
+ printf("\nLatency histograms:\n");
+ printf("VFS read latency (ns):\n");
+ print(@read_ns);
+ clear(@counts);
+ clear(@totals);
+ clear(@read_ns);
+ clear(@write_ns);
+ clear(@fsync_ns);
+ clear(@open_ns);
+ clear(@create_ns);
+}
+
+END {
+ printf("Finished tracing VFS operations.\n");
+}
+

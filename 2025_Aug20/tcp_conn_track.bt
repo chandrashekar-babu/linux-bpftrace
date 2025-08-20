@@ -1,0 +1,58 @@
+#!/usr/bin/env bpftrace
+
+#include 
+#include 
+
+BEGIN {
+  printf("Tracing TCP connections... Press Ctrl-C to end.\n");
+  printf("%-6s %-16s %-16s %-16s\n", "PID", "COMM", "REMOTE_ADDR", "LATENCY(μs)");
+}
+
+// Track connection start
+kprobe:tcp_v4_connect,
+kprobe:tcp_v6_connect {
+  // Store timestamp when connection initiated
+  @connect_start[tid] = nsecs;
+}
+
+// Extract remote address
+kretprobe:tcp_v4_connect {
+  $sk = (struct sock *)arg0;
+  $daddr = ntop($sk->__sk_common.skc_daddr);
+  $dport = $sk->__sk_common.skc_dport;
+  
+  // Convert port from network to host byte order
+  $dport = (($dport & 0xFF) << 8) | ($dport >> 8);
+  
+  @connect_addr[tid] = $daddr;
+  @connect_port[tid] = $dport;
+}
+
+// Track connection completion
+kprobe:tcp_finish_connect {
+  $sk = (struct sock *)arg0;
+  $start = @connect_start[tid];
+  
+  if ($start) {
+    $addr = @connect_addr[tid];
+    $port = @connect_port[tid];
+    $latency = (nsecs - $start) / 1000; // microseconds
+    
+    printf("%-6d %-16s %-16s:%-5d %9d\n", 
+           pid, comm, $addr, $port, $latency);
+    
+    // Aggregate statistics
+    @conn_latency_us[comm] = hist($latency);
+    
+    // Cleanup
+    delete(@connect_start[tid]);
+    delete(@connect_addr[tid]);
+    delete(@connect_port[tid]);
+  }
+}
+
+END {
+  printf("\nTCP connection latency histograms by process:\n");
+  print(@conn_latency_us);
+}
+

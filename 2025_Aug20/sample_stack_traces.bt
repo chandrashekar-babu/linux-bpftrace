@@ -1,0 +1,12 @@
+#!/usr/bin/env bpftrace
+
+// Sample user+kernel stacks at 99Hz for process 1234
+
+profile:hz:99 /pid == 1234/ {
+    @[kstack, ustack] = count();
+}
+
+interval:s:10 {
+    exit();
+}
+

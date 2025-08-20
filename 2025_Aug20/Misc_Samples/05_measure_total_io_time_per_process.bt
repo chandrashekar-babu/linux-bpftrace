@@ -1,0 +1,10 @@
+#!/usr/bin/env bpftrace
+# Measure total I/O time per process
+kprobe:vfs_read,kprobe:vfs_write { 
+   @start[tid] = nsecs; 
+}
+ 
+kretprobe:vfs_read,kretprobe:vfs_write /@start[tid]/ { 
+   @io_time_ns[comm] += nsecs - @start[tid]; 
+   delete(@start[tid]); 
+}

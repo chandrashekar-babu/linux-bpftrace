@@ -1,0 +1,50 @@
+#!/usr/bin/env bpftrace
+
+BEGIN {
+  printf("Starting performance anomaly detection...\n");
+}
+
+// Define thresholds
+#define DISK_LATENCY_THRESHOLD_MS 100
+#define CPU_RUNQ_THRESHOLD 10
+#define PROCESS_OF_INTEREST "nginx"
+
+// Monitor disk I/O latency spikes
+tracepoint:block:block_rq_issue {
+  @start[args->dev, args->sector] = nsecs;
+}
+
+tracepoint:block:block_rq_complete {
+  $start = @start[args->dev, args->sector];
+  if ($start) {
+    $latency_ms = (nsecs - $start) / 1000000;
+    if ($latency_ms > DISK_LATENCY_THRESHOLD_MS) {
+      printf("ALERT: High disk latency detected: %d ms for dev %d\n", 
+             $latency_ms, args->dev);
+    }
+    delete(@start[args->dev, args->sector]);
+  }
+}
+
+// Monitor process-specific anomalies
+profile:hz:10 /comm == PROCESS_OF_INTEREST/ {
+  @process_samples = count();
+}
+
+// Detect CPU run queue length spikes
+profile:hz:100 {
+  $len = *(*int32*)(((void *)curtask) + 0x440);  // Adjust offset as needed
+  if ($len > CPU_RUNQ_THRESHOLD) {
+    printf("ALERT: High run queue length on CPU %d: %d tasks\n", cpu, $len);
+  }
+}
+
+// Print regular status updates
+interval:s:30 {
+  printf("Monitoring active, no critical alerts triggered\n");
+}
+
+END {
+  printf("Performance anomaly detection ending.\n");
+}
+

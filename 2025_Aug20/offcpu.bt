@@ -1,0 +1,37 @@
+#!/usr/bin/env bpftrace
+
+BEGIN {
+  printf("Tracing off-CPU stacks. Press Ctrl-C to end.\n");
+}
+
+// Track when process goes off-CPU with stack
+tracepoint:sched:sched_switch {
+  // Only interested in our target process
+  if (args->prev_pid == (int32)$1) {
+    // Store timestamp and stack when going off-CPU
+    @start[args->prev_pid] = nsecs;
+    @last_stack[args->prev_pid] = kstack;
+  }
+}
+
+// When process comes back on-CPU
+tracepoint:sched:sched_switch {
+  $pid = args->next_pid;
+  if ($pid == (int32)$1 && @start[$pid] != 0) {
+    // Calculate off-CPU duration
+    $duration_ns = nsecs - @start[$pid];
+    
+    // Only record if off-CPU for >10ms
+    if ($duration_ns > 1000000) {
+      // Store stack and duration
+      @off_cpu_stack[@last_stack[$pid]] = sum($duration_ns);
+    }
+    delete(@start[$pid]);
+  }
+}
+
+END {
+  printf("Off-CPU stack samples (>10ms):\n");
+  print(@off_cpu_stack);
+  clear(@off_cpu_stack);
+}

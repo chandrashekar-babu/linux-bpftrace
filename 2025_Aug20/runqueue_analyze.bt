@@ -1,0 +1,8 @@
+// Sample run queue length every 10ms
+profile:hz:100 {
+  $len = 0;
+  // Parse task_struct runqueue information
+  $len = *(*int32*)(((void *)curtask) + 0x440);  // Offset to nr_running
+  @runqlen[cpu] = hist($len);
+}
+

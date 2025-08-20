@@ -1,0 +1,11 @@
+#!/usr/bin/env bpftrace
+
+# Measure read() syscall latency
+tracepoint:syscalls:sys_enter_read { 
+    @start[tid] = nsecs;
+}
+
+tracepoint:syscalls:sys_exit_read /@start[tid]/ { 
+    @latency_ns = hist(nsecs - @start[tid]); 
+    delete(@start[tid]); 
+}

@@ -1,0 +1,65 @@
+#!/usr/bin/env bpftrace
+
+// switchanalysis.bt - Analyze context switching patterns
+
+BEGIN {
+ printf("Analyzing context switches... Hit Ctrl-C to end.\n");
+}
+
+// Track when a thread is scheduled off CPU
+tracepoint:sched:sched_switch {
+ // Record when the thread went off-CPU
+ $pid = args->prev_pid;
+ $comm = args->prev_comm;
+ @last_off_time[$pid, $comm] = nsecs;
+ 
+ // Calculate time spent off-CPU for the thread that's now scheduled on
+ $new_pid = args->next_pid;
+ $new_comm = args->next_comm;
+ $last_time = @last_off_time[$new_pid, $new_comm];
+ if ($last_time != 0) {
+ $off_time = nsecs - $last_time;
+ @off_cpu_time_us[$new_comm, $new_pid] = hist($off_time / 1000);
+ delete(@last_off_time[$new_pid, $new_comm]);
+ }
+ 
+ // Track how often processes are switched
+ @switch_count[$comm, "switched out"] += 1;
+ @switch_count[$new_comm, "switched in"] += 1;
+ 
+ // Track common pairs (what often follows what)
+ @pairs[$comm, $new_comm] += 1;
+}
+
+// Track run queue latency (time spent waiting to run)
+tracepoint:sched:sched_wakeup {
+ @wakeup_time[args->pid, args->comm] = nsecs;
+}
+
+tracepoint:sched:sched_switch /@wakeup_time[args->next_pid, args->next_comm]/ {
+ $latency = nsecs - @wakeup_time[args->next_pid, args->next_comm];
+ @runq_latency_us[args->next_comm] = hist($latency / 1000);
+ delete(@wakeup_time[args->next_pid, args->next_comm]);
+}
+
+interval:s:10 {
+ printf("\n=== Context Switch Statistics ===\n");
+ printf("\nTop process switch counts:\n");
+ print(@switch_count, 10);
+ 
+ printf("\nCommon process pairs (what follows what):\n");
+ print(@pairs, 10);
+ 
+ clear(@switch_count);
+ clear(@pairs);
+}
+
+END {
+ printf("\n=== Final Statistics ===\n");
+ printf("\nTime spent off-CPU by process (microseconds):\n");
+ print(@off_cpu_time_us);
+ 
+ printf("\nRun queue latency by process (microseconds):\n");
+ print(@runq_latency_us);
+}
+

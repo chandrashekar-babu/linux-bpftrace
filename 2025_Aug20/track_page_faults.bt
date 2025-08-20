@@ -1,0 +1,34 @@
+#!/usr/bin/env bpftrace
+
+BEGIN {
+  printf("Tracing page faults... Press Ctrl-C to end.\n");
+}
+
+// Track major page faults with stack trace
+software:major-faults {
+  @major[pid, comm, kstack, ustack] = count();
+  @major_total[pid, comm] = count();
+}
+
+// Track minor page faults with stack trace
+software:minor-faults {
+  @minor[pid, comm] = count();
+}
+
+// Print summary every 5 seconds
+interval:s:5 {
+  time("%H:%M:%S Page fault summary:\n");
+  printf("Top processes with minor faults:\n");
+  print(@minor, 5);
+  printf("Top processes with major faults:\n");
+  print(@major_total, 5);
+}
+
+END {
+  printf("Major fault stack traces:\n");
+  print(@major, 10);
+  clear(@major);
+  clear(@minor);
+  clear(@major_total);
+}
+

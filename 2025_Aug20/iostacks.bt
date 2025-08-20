@@ -1,0 +1,24 @@
+#!/usr/bin/env bpftrace
+
+BEGIN {
+  printf("Tracing block I/O with stack traces... Ctrl-C to end.\n");
+}
+
+// Capture stack trace for I/O requests
+tracepoint:block:block_rq_issue {
+  // Only trace process given as argument (or all if no arg)
+  if ($1 == 0 || $1 == pid) {
+    @bytes[kstack, ustack, comm] = sum(args->nr_sector * 512);
+    @count[kstack, ustack, comm] = count();
+  }
+}
+
+// Print top 10 stack traces by I/O volume
+END {
+  printf("Top 10 stacks by I/O volume:\n");
+  print(@bytes, 10);
+  
+  printf("\nTop 10 stacks by I/O frequency:\n");
+  print(@count, 10);
+}
+

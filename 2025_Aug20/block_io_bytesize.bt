@@ -1,0 +1,52 @@
+#!/usr/bin/env bpftrace
+
+BEGIN {
+ printf("Tracing block I/O... Output every 1 second.\n");
+}
+
+tracepoint:block:block_rq_issue {
+ // Track issue time, process, and device
+ @start[args->dev, args->sector] = nsecs;
+ @process[args->dev, args->sector] = comm;
+ @bytes[args->dev, args->sector] = args->nr_sector * 512;
+ @type[args->dev, args->sector] = args->rwbs;
+}
+
+tracepoint:block:block_rq_complete {
+ $start = @start[args->dev, args->sector];
+ 
+ if ($start) {
+ $duration = nsecs - $start;
+ $process = @process[args->dev, args->sector];
+ $bytes = @bytes[args->dev, args->sector];
+ $type = @type[args->dev, args->sector];
+ 
+ // Update histograms
+ @size_bytes[$type] = hist($bytes);
+ @latency_us[$type] = hist($duration / 1000);
+ @process_io[$process, $type] = sum($bytes);
+ 
+ // Cleanup tracking maps
+ delete(@start[args->dev, args->sector]);
+ delete(@process[args->dev, args->sector]);
+ delete(@bytes[args->dev, args->sector]);
+ delete(@type[args->dev, args->sector]);
+ }
+}
+
+// Print statistics every second
+interval:s:1 {
+ time("%H:%M:%S I/O summary:\n");
+ printf("I/O size distribution (bytes):\n");
+ print(@size_bytes);
+ clear(@size_bytes);
+ 
+ printf("I/O latency distribution (microseconds):\n");
+ print(@latency_us);
+ clear(@latency_us);
+ 
+ printf("Per-process I/O (bytes):\n");
+ print(@process_io);
+ clear(@process_io);
+}
+

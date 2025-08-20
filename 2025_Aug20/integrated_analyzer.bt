@@ -1,0 +1,55 @@
+#!/usr/bin/env bpftrace
+
+BEGIN {
+  printf("Starting integrated performance analysis...\n");
+}
+
+// CPU profiling (sampling)
+profile:hz:49 {
+  @cpu_stacks[kstack, ustack, comm] = count();
+}
+
+// Memory allocations
+kprobe:kmalloc /comm == str($1)/ {
+  @kmalloc_bytes = hist(arg1);
+}
+
+// I/O tracking
+tracepoint:block:block_rq_issue {
+  @io_start[args->dev, args->sector] = nsecs;
+  @io_type[args->dev, args->sector] = args->rwbs;
+}
+
+tracepoint:block:block_rq_complete {
+  $start = @io_start[args->dev, args->sector];
+  $type = @io_type[args->dev, args->sector];
+  
+  if ($start) {
+    $latency = nsecs - $start;
+    @io_latency_ms[$type, comm] = hist($latency / 1000000);
+    delete(@io_start[args->dev, args->sector]);
+    delete(@io_type[args->dev, args->sector]);
+  }
+}
+
+// Print stats every minute
+interval:s:60 {
+  time("%H:%M:%S Periodic performance summary:\n");
+  
+  printf("\nI/O Latency distribution (ms):\n");
+  print(@io_latency_ms);
+  clear(@io_latency_ms);
+  
+  printf("\nMemory allocation sizes:\n");
+  print(@kmalloc_bytes);
+  clear(@kmalloc_bytes);
+  
+  printf("\nTop CPU stack traces:\n");
+  print(@cpu_stacks, 5);
+  clear(@cpu_stacks);
+}
+
+END {
+  printf("Performance analysis complete.\n");
+}
+

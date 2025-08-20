@@ -1,0 +1,33 @@
+#!/usr/bin/env bpftrace
+
+BEGIN {
+  printf("Sampling CPU stacks for processes. Press Ctrl-C to end.\n");
+}
+
+// Sample at 99Hz across all CPUs
+profile:hz:99 {
+  // Collect process info
+  $pid = pid;
+  $comm = comm;
+  $ts = nsecs;
+  
+  // Store in stack-aggregated map
+  @stacks[$comm, $pid, kstack, ustack] = count();
+  
+  // Track total samples per process
+  @proc_samples[$comm, $pid] = count();
+}
+
+// Print summary every 10 seconds
+interval:s:10 {
+  time("%H:%M:%S Sampling summary:\n");
+  print(@proc_samples);
+  clear(@proc_samples);
+}
+
+END {
+  printf("Top stacks by process and count:\n");
+  print(@stacks, 10);
+  clear(@stacks);
+}
+

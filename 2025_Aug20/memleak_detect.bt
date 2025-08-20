@@ -1,0 +1,31 @@
+#!/usr/bin/env bpftrace
+
+// Track mmap/munmap balance to find potential memory leaks
+BEGIN {
+  printf("Tracing mmap/munmap calls... Press Ctrl-C to end.\n");
+}
+
+tracepoint:syscalls:sys_enter_mmap {
+  @mmap[pid, comm] = count();
+  @map_count[pid, comm] += 1;
+}
+
+tracepoint:syscalls:sys_enter_munmap {
+  @munmap[pid, comm] = count();
+  @map_count[pid, comm] -= 1;
+}
+
+END {
+  printf("Memory mapping summary:\n");
+  printf("mmap calls by process:\n");
+  print(@mmap);
+  
+  printf("\nmunmap calls by process:\n");
+  print(@munmap);
+  
+  printf("\nDifference (potential leaks if large and positive):\n");
+  // @diff = (int64)@mmap;
+  // @diff -= (int64)@munmap;
+  print(@map_count);
+}
+

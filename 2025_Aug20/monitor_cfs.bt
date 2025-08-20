@@ -1,0 +1,13 @@
+kprobe:update_curr {
+  // Extract task info from function args
+  $curr = (struct task_struct *)arg0;
+  $pid = $curr->pid;
+  $comm = $curr->comm;
+  
+  // Get task's runtime
+  $delta_exec = (uint64)$curr->se.sum_exec_runtime;
+  
+  // Keep track of total runtime
+  @runtime_ns[$comm, $pid] = $delta_exec;
+}
+

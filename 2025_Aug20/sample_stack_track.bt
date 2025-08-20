@@ -1,0 +1,10 @@
+#!/usr/bin/env bpftrace
+
+profile:hz:10 /pid == $1/ {
+	@[kstack, ustack] = count();
+}
+
+interval:s:2 {
+	printf("Exiting...\n");
+	exit();
+}

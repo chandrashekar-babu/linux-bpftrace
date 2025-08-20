@@ -1,0 +1,8 @@
+#!/usr/bin/env bpftrace
+
+tracepoint:kmem:kmalloc {
+	$req_bytes = args->bytes_req;
+	$alloc_bytes = args->bytes_alloc;
+	@fragmentation[comm] += ($alloc_bytes - $req_bytes);
+}
+

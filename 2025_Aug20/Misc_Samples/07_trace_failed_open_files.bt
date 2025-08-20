@@ -1,0 +1,12 @@
+#!/usr/bin/env bpftrace
+
+# Track failed open() calls with filename and error
+tracepoint:syscalls:sys_enter_open { 
+    @fname[tid] = str(args->filename);
+}
+
+tracepoint:syscalls:sys_exit_open /args->ret < 0/ {
+    printf("%s (pid %d) failed to open %s: errno %d\n", 
+                     comm, pid, @fname[tid], -args->ret);
+    delete(@fname[tid]);
+}
