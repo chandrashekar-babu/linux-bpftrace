@@ -1,0 +1,28 @@
+#!/usr/bin/env bpftrace
+
+#include <linux/socket.h>
+//#include <net/sock.h>
+//#include <linux/types.h>
+
+BEGIN {
+ printf("Tracing DNS queries... Hit Ctrl-C to end.\n");
+}
+
+// Catch UDP packets on port 53 (DNS)
+kprobe:udp_sendmsg {
+ $sk = (struct sock *)arg0;
+ $dport = (uint16)($sk->__sk_common.skc_dport);
+ 
+ // Check if it's to port 53 (DNS)
+ if ($dport == 53) {
+ $daddr = ntop($sk->__sk_common.skc_daddr);
+ printf("%-6d %-16s DNS query to %s (resolver)\n", 
+ pid, comm, $daddr);
+ @dns_queries[comm] = count();
+ }
+}
+
+END {
+ printf("\nDNS query counts by process:\n");
+ print(@dns_queries);
+}

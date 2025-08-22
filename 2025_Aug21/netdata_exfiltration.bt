@@ -1,0 +1,54 @@
+#!/usr/bin/env bpftrace
+
+BEGIN {
+ printf("Monitoring for potential data exfiltration...\n");
+ printf("Threshold: >10MB outbound in 1 minute\n");
+ 
+ // Whitelist known data transfer processes - customize for your environment
+ @allowed_data_xfer["rsync"] = 1;
+ @allowed_data_xfer["scp"] = 1;
+ @allowed_data_xfer["sftp"] = 1;
+ @allowed_data_xfer["backup"] = 1;
+}
+
+kprobe:tcp_sendmsg {
+ $sk = (struct sock *)arg0;
+ $size = arg2;
+ 
+ // Only track outbound connections (not localhost)
+ if ($sk->__sk_common.skc_daddr != 0x0100007F && // 127.0.0.1
+ $sk->__sk_common.skc_daddr != 0) {
+ 
+ $daddr = ntop($sk->__sk_common.skc_daddr);
+ $dport = ntohs($sk->__sk_common.skc_dport);
+ 
+ // Track bytes by process
+ @bytes[comm, $daddr, $dport] += $size;
+ 
+ // Alert on large single writes
+ if ($size > 1000000 && @allowed_data_xfer[comm] != 1) {
+ printf("Large send: %s (PID %d) sending %d bytes to %s:%d\n",
+ comm, pid, $size, $daddr, $dport);
+ }
+ }
+}
+
+interval:s:60 {
+ printf("\n=== Checking for suspicious data transfers ===\n");
+ 
+ // Detect potential exfiltration by checking total bytes transferred
+ foreach ([$comm, $daddr, $dport] in @bytes) {
+ $total = @bytes[$comm, $daddr, $dport];
+ 
+ // Alert on large total transfers by non-whitelisted processes
+ if ($total > 10000000 && @allowed_data_xfer[$comm] != 1) {
+ printf("ALERT: Possible data exfiltration by %s to %s:%d (%d bytes)\n", 
+ $comm, $daddr, $dport, $total);
+ }
+ }
+ 
+ printf("\n=== Data transfer summary (bytes) ===\n");
+ print(@bytes);
+ clear(@bytes);
+}
+

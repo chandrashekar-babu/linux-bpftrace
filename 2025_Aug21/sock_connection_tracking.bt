@@ -1,0 +1,74 @@
+#!/usr/bin/env bpftrace
+
+BEGIN {
+ printf("Tracing connection activity by process... Hit Ctrl-C to end.\n");
+}
+
+// Track socket creation
+tracepoint:syscalls:sys_enter_socket {
+ @socket_ops[pid, comm, "create"] = count();
+}
+
+// Track connection attempts
+tracepoint:syscalls:sys_enter_connect {
+ $sa = (struct sockaddr *)args->uservaddr;
+ if ($sa->sa_family == AF_INET) {
+ $in = (struct sockaddr_in *)$sa;
+ $daddr = ntop($in->sin_addr.s_addr);
+ $dport = ntohs($in->sin_port);
+ 
+ printf("%-6d %-16s connect %s:%d\n", pid, comm, $daddr, $dport);
+ @connect_to[comm, $daddr, $dport] = count();
+ @socket_ops[pid, comm, "connect"] = count();
+ }
+}
+
+// Track bind operations
+tracepoint:syscalls:sys_enter_bind {
+ $sa = (struct sockaddr *)args->umyaddr;
+ if ($sa->sa_family == AF_INET) {
+ $in = (struct sockaddr_in *)$sa;
+ $addr = ntop($in->sin_addr.s_addr);
+ $port = ntohs($in->sin_port);
+ 
+ printf("%-6d %-16s bind %s:%d\n", pid, comm, $addr, $port);
+ @bind_to[comm, $addr, $port] = count();
+ @socket_ops[pid, comm, "bind"] = count();
+ }
+}
+
+// Track listening sockets
+tracepoint:syscalls:sys_enter_listen {
+ @socket_ops[pid, comm, "listen"] = count();
+}
+
+// Track accept operations
+tracepoint:syscalls:sys_enter_accept {
+ @socket_ops[pid, comm, "accept"] = count();
+}
+
+// Track socket close
+tracepoint:syscalls:sys_enter_close /@socket_fds[tid]/ {
+ @socket_ops[pid, comm, "close"] = count();
+ delete(@socket_fds[tid]);
+}
+
+tracepoint:syscalls:sys_exit_socket /args->ret >= 0/ {
+ @socket_fds[tid] = args->ret;
+}
+
+interval:s:10 {
+ printf("\n=== Socket operations by process ===\n");
+ print(@socket_ops);
+ 
+ printf("\n=== Connection attempts by destination ===\n");
+ print(@connect_to);
+ 
+ printf("\n=== Bind operations by address ===\n");
+ print(@bind_to);
+ 
+ clear(@socket_ops);
+ clear(@connect_to);
+ clear(@bind_to);
+}
+

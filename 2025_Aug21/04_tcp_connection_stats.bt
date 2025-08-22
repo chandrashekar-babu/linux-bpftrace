@@ -1,0 +1,7 @@
+#!/usr/bin/env bpftrace
+kprobe:tcp_connect { @start[arg0] = nsecs; }
+
+kretprobe:tcp_connect /@start[arg0]/ {
+    @duration_ns = hist(nsecs - @start[arg0]);
+    delete(@start[arg0]);
+}

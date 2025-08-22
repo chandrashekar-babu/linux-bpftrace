@@ -1,0 +1,8 @@
+tracepoint:syscalls:sys_enter_socket { @opens[comm] = count(); }
+tracepoint:syscalls:sys_enter_close /@socket_fds[tid]/ { 
+  @closes[comm] = count(); 
+  delete(@socket_fds[tid]); 
+}
+tracepoint:syscalls:sys_exit_socket /retval >= 0/ { 
+  @socket_fds[tid] = retval; 
+}

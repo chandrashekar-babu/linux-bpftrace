@@ -1,0 +1,43 @@
+#!/usr/bin/env bpftrace
+
+BEGIN {
+ printf("Analyzing TCP receive windows... Hit Ctrl-C to end.\n");
+}
+
+kprobe:tcp_rcv_established {
+ $sk = (struct sock *)arg0;
+ $tp = (struct tcp_sock *)$sk;
+ 
+ // Calculate current receive window in bytes
+ $rcv_wnd = $tp->rcv_wnd;
+ $window_scaling = 1 << $tp->rx_opt.rcv_wscale;
+ $effective_window = $rcv_wnd * $window_scaling;
+ 
+ // Get connection details
+ $daddr = ntop($sk->__sk_common.skc_daddr);
+ $saddr = ntop($sk->__sk_common.skc_rcv_saddr);
+ 
+ // Record histograms of receive window sizes
+ @rcv_wnd_bytes[$daddr] = hist($effective_window);
+ 
+ // Detect small windows (potential bottleneck)
+ if ($effective_window < 4096) {
+ printf("Small window alert: %s->%s window: %d bytes\n", 
+ $saddr, $daddr, $effective_window);
+ @small_windows[$saddr, $daddr] = count();
+ }
+}
+
+interval:s:10 {
+ printf("\n=== TCP Receive Window Analysis ===\n");
+ printf("Receive window size distributions by remote host:\n");
+ print(@rcv_wnd_bytes);
+ 
+ if (@small_windows) {
+ printf("\nConnections with small receive windows:\n");
+ print(@small_windows);
+ }
+ 
+ clear(@rcv_wnd_bytes);
+ clear(@small_windows);
+}

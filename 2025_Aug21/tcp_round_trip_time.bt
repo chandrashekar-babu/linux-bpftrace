@@ -1,0 +1,43 @@
+#!/usr/bin/env bpftrace
+
+#ifndef BPFTRACE_HAVE_BTF
+#include <linux/socket.h>
+#include <net/sock.h>
+#else
+/*
+ * BTF provides the types, we just need to define AF_INET and AF_INET6.
+ * These are Linux ABI defines, and are not architecture-specific.
+ * With BTF, this allows tcpconnect.bt to work without glibc headers:
+ */
+#define AF_INET   2 /* IPv4 */
+#define AF_INET6 10 /* IPv6 */
+#endif
+
+kprobe:__tcp_transmit_skb {
+	$sk = ((struct sock *) arg0);
+	$tp = ((struct tcp_sock *) arg0);
+	$seq = $tp->snd_nxt;
+	@start[$sk,$seq] = nsecs;
+}
+
+kprobe:tcp_ack {
+	$sk = ((struct sock *) arg0);
+	$seq = arg1;
+	$start = @start[$sk,$seq];
+
+	if ($start) {
+		$rtt = (nsecs - $start) / 1000000; 
+
+		if ($rtt > 0 && $rtt < 10000) {
+			$daddr = ntop($sk->__sk_common.skc_daddr);
+			$saddr = ntop($sk->__sk_common.skc_rcv_saddr);
+			$lport = bswap($sk->__sk_common.skc_num);
+			$dport = bswap($sk->__sk_common.skc_dport);
+
+			printf("RTT: %6d ms (%s:%d -> %s:%d)\n",
+					$rtt, $saddr,$lport, $daddr,$dport);
+			@rtt_hist[$daddr] = hist($rtt);
+			delete(@start[$sk,$seq]);
+		}
+	}
+}

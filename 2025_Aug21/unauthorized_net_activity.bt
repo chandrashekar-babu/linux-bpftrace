@@ -1,0 +1,51 @@
+#!/usr/bin/env bpftrace
+
+BEGIN {
+ printf("Monitoring for unauthorized network activity...\n");
+ 
+ // Define allowed network binaries - customize for your environment
+ @allowed_net_bins["curl"] = 1;
+ @allowed_net_bins["wget"] = 1;
+ @allowed_net_bins["ssh"] = 1;
+ @allowed_net_bins["scp"] = 1;
+ @allowed_net_bins["rsync"] = 1;
+ @allowed_net_bins["nc"] = 1;
+ @allowed_net_bins["netcat"] = 1;
+ @allowed_net_bins["firefox"] = 1;
+ @allowed_net_bins["chrome"] = 1;
+ @allowed_net_bins["chromium"] = 1;
+}
+
+tracepoint:syscalls:sys_enter_connect {
+ $sa = (struct sockaddr *)args->uservaddr;
+ 
+ // Only monitor IPv4 and IPv6 connections
+ if ($sa->sa_family == AF_INET || $sa->sa_family == AF_INET6) {
+ // Check if this is an allowed binary
+ if (@allowed_net_bins[comm] != 1) {
+ // This is a potential unauthorized connection
+ if ($sa->sa_family == AF_INET) {
+ $in = (struct sockaddr_in *)$sa;
+ $daddr = ntop($in->sin_addr.s_addr);
+ $dport = ntohs($in->sin_port);
+ 
+ printf("ALERT: Unauthorized connection attempt by %s (PID %d): %s:%d\n",
+ comm, pid, $daddr, $dport);
+ @unauth_conns[comm, $daddr, $dport] = count();
+ 
+ // Record stack trace for investigation
+ @stacks[comm, pid] = ustack;
+ }
+ }
+ }
+}
+
+interval:s:10 {
+ printf("\n=== Unauthorized connection summary ===\n");
+ print(@unauth_conns);
+ 
+ if (@stacks) {
+ printf("\n=== Stack traces for investigation ===\n");
+ print(@stacks);
+ clear(@stacks);
+ }

@@ -1,0 +1,44 @@
+#!/usr/bin/env bpftrace
+
+BEGIN {
+  printf("Tracing DNS queries... Press Ctrl-C to end.\n");
+}
+
+// Track getaddrinfo entry
+uprobe:libc:getaddrinfo {
+  // Store the query name and timestamp
+  @dns_start[tid] = nsecs;
+  @dns_query[tid] = str(arg0);
+  @dns_process[tid] = comm;
+}
+
+// Track getaddrinfo return
+uretprobe:libc:getaddrinfo {
+  $start = @dns_start[tid];
+  $query = @dns_query[tid];
+  $process = @dns_process[tid];
+  
+  if ($start) {
+    $latency = (nsecs - $start) / 1000000; // milliseconds
+    
+    // Only print if latency is over 10ms
+    if ($latency > 10) {
+      printf("DNS query for %s by %s took %d ms\n", 
+             $query, $process, $latency);
+    }
+    
+    // Aggregate statistics
+    @dns_latency_ms[$process, $query] = hist($latency);
+    
+    // Cleanup
+    delete(@dns_start[tid]);
+    delete(@dns_query[tid]);
+    delete(@dns_process[tid]);
+  }
+}
+
+END {
+  printf("\nDNS resolution latency histograms (ms):\n");
+  print(@dns_latency_ms);
+}
+

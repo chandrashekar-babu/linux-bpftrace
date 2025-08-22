@@ -1,0 +1,20 @@
+#!/usr/bin/env bpftrace
+
+tracepoint:syscalls:sys_enter_connect
+{
+    $user_addr = args->uservaddr;  // struct sockaddr * uservaddr
+    $family = *(uint16 *)($user_addr);
+    
+    if ($family == 2) {  // AF_INET
+        $port_be = *(uint16 *)($user_addr + 2);
+        $ip = *(uint32 *)($user_addr + 4);
+        
+        // Convert network byte order to host byte order for port
+        // $port = (($port_be >> 8) & 0xFF) | (($port_be & 0xFF) << 8);
+        
+        printf("CONNECT: PID %d (%s) -> %s:%d\n",
+            pid, comm,
+            ntop($ip),
+            bswap($port_be));
+    }
+}

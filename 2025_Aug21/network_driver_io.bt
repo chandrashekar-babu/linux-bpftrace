@@ -1,0 +1,36 @@
+#!/usr/bin/env bpftrace
+
+BEGIN {
+ printf("Tracing network device driver I/O... Hit Ctrl-C to end.\n");
+}
+
+// Trace network packet receipt
+kprobe:netif_receive_skb {
+ @receive_stack[kstack] = count();
+ @dev_rx[arg0->dev->name] = count();
+}
+
+// Trace network packet transmission
+kprobe:dev_hard_start_xmit {
+ @transmit_stack[kstack] = count();
+ @dev_tx[arg0->dev->name] = count();
+}
+
+interval:s:5 {
+ printf("\n=== Network I/O by device ===\n");
+ printf("Packets received:\n");
+ print(@dev_rx);
+ printf("\nPackets transmitted:\n");
+ print(@dev_tx);
+ 
+ clear(@dev_rx);
+ clear(@dev_tx);
+}
+
+END {
+ printf("\n=== Top packet receive stacks ===\n");
+ print(@receive_stack, 5);
+ printf("\n=== Top packet transmit stacks ===\n");
+ print(@transmit_stack, 5);
+}
+

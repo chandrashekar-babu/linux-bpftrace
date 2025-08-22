@@ -1,0 +1,18 @@
+tracepoint:block:block_rq_issue {
+	@start[args->dev, args->sector] = nsecs;
+	@type[args->dev, args->sector] = args->rwbs;
+}
+
+tracepoint:block:block_rq_complete {
+	$start = @start[args->dev, args->sector];
+	$type = @type[args->dev, args->sector];
+
+	if ($start) {
+		$duration = nsecs - $start;
+
+		@usecs[$type] = hist($duration / 1000);
+		delete(@start[args->dev, args->sector]);
+		delete(@type[args->dev, args->sector]);
+	}
+}
+

@@ -1,0 +1,38 @@
+#!/usr/bin/env bpftrace
+
+BEGIN {
+ printf("%-5s %-10s %-15s %-5s %-15s %-5s %s\n",
+ "PID", "COMM", "LADDR", "LPORT", "RADDR", "RPORT", "MS");
+}
+
+kprobe:tcp_set_state {
+ $sk = (struct sock *)arg0;
+ $newstate = arg1;
+ 
+ if ($newstate == 1) {
+   @start[$sk] = nsecs;
+ }
+}
+
+kprobe:tcp_close {
+ $sk = (struct sock *)arg0;
+ $delta = nsecs - @start[$sk];
+ $durationms = $delta / 1000000;
+ 
+ $family = $sk->__sk_common.skc_family;
+ 
+ if ($family == 2) {
+   $daddr = ntop($sk->__sk_common.skc_daddr);
+   $saddr = ntop($sk->__sk_common.skc_rcv_saddr);
+   $lport = $sk->__sk_common.skc_num;
+   $dport = $sk->__sk_common.skc_dport;
+ 
+   printf("%-5d %-10s %-15s %-5d %-15s %-5d %d\n",
+       pid, comm, $saddr, $lport, $daddr, $dport, $durationms);
+ }
+
+ if (@start[$sk]) {
+   delete(@start, $sk);
+ }
+}
+

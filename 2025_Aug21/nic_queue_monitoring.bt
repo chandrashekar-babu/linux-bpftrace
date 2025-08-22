@@ -1,0 +1,38 @@
+#!/usr/bin/env bpftrace
+
+BEGIN {
+ printf("Monitoring NIC queue metrics... Hit Ctrl-C to end.\n");
+}
+
+// Track queue fill level on transmit
+kprobe:__dev_queue_xmit {
+ $skb = (struct sk_buff *)arg0;
+ $dev = $skb->dev;
+ if ($dev) {
+   @tx_qlen[$dev->name] = hist($dev->tx_queue_len);
+   @tx_bytes[$dev->name] = sum($skb->len);
+ }
+}
+
+// Track packet drops
+kprobe:dev_hard_start_xmit {
+ $ret = retval;
+ if ($ret == -1) {
+   $skb = (struct sk_buff *)arg0;
+   $dev = $skb->dev;
+   @drops[$dev->name] = count();
+ }
+}
+
+interval:s:5 {
+ time("%H:%M:%S\n");
+ printf("NIC transmit queue lengths:\n");
+ print(@tx_qlen);
+ printf("\nBytes transmitted per interface:\n");
+ print(@tx_bytes);
+ printf("\nDropped packets per interface:\n");
+ print(@drops);
+ clear(@tx_qlen);
+ clear(@tx_bytes);
+}
+

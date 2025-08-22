@@ -1,0 +1,64 @@
+#!/usr/bin/env bpftrace
+
+#include <linux/socket.h>
+#include <net/sock.h>
+#include <linux/types.h>
+
+BEGIN {
+ printf("Monitoring HTTP requests... Hit Ctrl-C to end.\n");
+ printf("%-6s %-16s %-16s %-5s %-5s %s\n", 
+ "PID", "COMM", "DSTIP", "PORT", "BYTES", "PATH");
+}
+
+kprobe:tcp_sendmsg {
+ $sk = (struct sock *)arg0;
+ $size = arg2;
+ 
+ // Only process packets with a reasonable HTTP request size
+ if ($size > 10 && $size < 1000) {
+    // Get source buffer
+    $iovbase = (char *)((struct iovec *)arg1)->iov_base;
+ 
+    // Look for HTTP request pattern (GET, POST, PUT, etc.)
+    $method = str($iovbase, 4);
+ 
+    if (($method == "GET " || $method == "POST" || 
+      $method == "PUT " || $method == "HEAD")) {
+ 
+      // Extract destination IP and port
+      $daddr = ntop($sk->__sk_common.skc_daddr);
+      $dport = ntohs($sk->__sk_common.skc_dport);
+ 
+      // If it's to standard HTTP/HTTPS ports
+      if ($dport == 80 || $dport == 443 || $dport == 8080) {
+         // Try to extract the request path
+         $path_start = 0;
+         $space_count = 0;
+ 
+         // Find the second space which comes after the path
+         for ($i = 0; $i < 80 && $i < $size; $i++) {
+             if ($iovbase[$i] == ' ') {
+                $space_count++;
+                if ($space_count == 1) {
+                    $path_start = $i + 1;
+                } else if ($space_count == 2) {
+                    // Found the end of the path
+                    $path = str($iovbase + $path_start, $i - $path_start);
+                    printf("%-6d %-16s %-16s %-5d %-5d %s\n", 
+                                 pid, comm, $daddr, $dport, $size, $path);
+                    break;
+                }
+             }
+          }
+ 
+          @http_reqs[comm, $daddr] = count();
+      }
+   }
+ }
+}
+
+END {
+ printf("\nHTTP request counts by process and destination:\n");
+ print(@http_reqs);
+}
+

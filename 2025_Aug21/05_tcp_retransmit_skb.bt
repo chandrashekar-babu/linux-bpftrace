@@ -1,0 +1,16 @@
+#!/usr/bin/env bpftrace
+
+#include <linux/socket.h>
+#include <net/sock.h>
+#include <linux/types.h>
+
+kprobe:tcp_retransmit_skb {
+ $sk = (struct sock *)arg0;
+ $inet_family = $sk->__sk_common.skc_family;
+ if ($inet_family == AF_INET || $inet_family == AF_INET6) {
+    $daddr = ntop($sk->__sk_common.skc_daddr);
+    $saddr = ntop($sk->__sk_common.skc_rcv_saddr);
+    printf("Retransmit: %s -> %s (PID: %d, %s)\n",
+    $saddr, $daddr, pid, comm);
+ }
+}

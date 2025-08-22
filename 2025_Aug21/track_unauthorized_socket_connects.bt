@@ -1,0 +1,16 @@
+#!/usr/bin/env bpftrace
+
+BEGIN {
+	@allowed["curl"] = 1;
+	@allowed["elinks"] = 1;
+}
+
+tracepoint:syscalls:sys_enter_connect {
+	if (!@allowed[comm]) {
+		printf("%s: unauthorized access to network\n", comm);
+	}
+
+	@unauthorized[comm] = count();
+}
+
+

@@ -1,0 +1,4 @@
+#!/usr/bin/env bpftrace
+
+tracepoint:syscalls:sys_enter_connect { @connects[comm] = count(); }
+interval:s:5 { print(@connects); clear(@connects); }
