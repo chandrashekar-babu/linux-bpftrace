@@ -1,0 +1,21 @@
+#!/usr/bin/env bpftrace
+
+#ifndef BPFTRACE_HAVE_BTF
+#include <linux/fs.h>
+#endif
+
+// Trace file opens with full path resolution
+kprobe:do_filp_open {
+  $pwd = (struct path *)arg0;
+  $dentry = $pwd->dentry;
+  $parent = $dentry->d_parent;
+  
+  // Get filename from dentry
+  $filename = str($dentry->d_name.name);
+  
+  // Get parent directory name
+  $dirname = str($parent->d_name.name);
+  
+  printf("Process %s opening %s/%s\n", 
+    comm, $dirname, $filename);
+}

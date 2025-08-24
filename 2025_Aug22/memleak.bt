@@ -1,0 +1,76 @@
+#!/usr/bin/bpftrace
+
+/*
+ * memleak.bt - Trace user-space memory allocations to find allocation hotspots.
+ *
+ * This tool traces malloc() and calloc() calls in a specific process to
+ * identify which parts of the code are allocating the most memory. This is
+ * a powerful way to begin investigating memory leaks.
+ *
+ * USAGE:
+ * 1. Find the full path to libc on your system:
+ * $ ldd /bin/ls | grep libc
+ *
+ * 2. Edit the 'uprobe:' lines below to match that path.
+ *
+ * 3. Run the script with the PID of the target process:
+ * $ sudo ./memleak.bt <PID>
+ */
+
+BEGIN
+{
+	// Check if a PID was provided as the first argument.
+	if ($1 == 0) {
+		printf("USAGE: sudo ./memleak.bt <PID>\n");
+		exit();
+	}
+	printf("Tracing memory allocations for PID %d... Hit Ctrl-C to end.\n", $1);
+}
+
+/*
+ * NOTE: The path to libc.so.6 can vary.
+ * Replace the path below with the one you found using `ldd`.
+ */
+uprobe:libc:malloc
+{
+	// The target PID is passed as the first command-line argument ($1).
+	if (pid == $1) {
+		// @[ustack] is a map where the key is the user-space call stack.
+		// We sum the allocation size (arg0) for each unique call stack.
+		@[ustack] = sum(arg0);
+	}
+}
+
+uprobe:libc:calloc
+{
+	if (pid == $1) {
+		// For calloc, the total size is (number of items * size of each item).
+		@[ustack] = sum(arg0 * arg1);
+	}
+}
+
+/*
+ * Reporting Interval
+ * Every 5 seconds, print the collected data.
+ */
+interval:s:5
+{
+	// Clear the screen for a clean, refreshing output.
+	printf("\033[2J\033[H");
+	printf("Top memory allocating stacks for PID %d over the last 5 seconds (updated at %s)\n\n", $1, strftime("%H:%M:%S", nsecs));
+
+	// Print the map, which will show total bytes allocated per call stack.
+	// The output will include the function names and offsets.
+	print(@, 10);
+
+	// Clear the map to start fresh for the next interval.
+	clear(@);
+}
+
+END
+{
+	// Final cleanup.
+	clear(@);
+	printf("Exiting.\n");
+}
+

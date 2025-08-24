@@ -1,0 +1,131 @@
+#!/usr/bin/bpftrace
+
+/*
+ * This script provides a "top"-like view of processes based on several key metrics.
+ * It prints the top 10 processes for each metric every 5 seconds.
+ *
+ * Note: Due to bpftrace's reporting capabilities, each metric is printed as a
+ * separate list rather than in a single unified table.
+ *
+ * Metrics tracked:
+ * - Syscall Count: Total system calls made by each process.
+ * - Context Switches: Number of times the process was scheduled onto a CPU.
+ * - Page Faults: Number of user-space page faults incurred.
+ * - Memory Allocation: Total bytes allocated via the kernel's kmalloc function.
+ * - CPU Time: Total time spent actively running on-CPU, measured in nanoseconds.
+ */
+
+BEGIN
+{
+	// Initial message when the script starts.
+	printf("Starting process profiler... Press Ctrl-C to exit.\n");
+}
+
+/*
+ * 1. Total syscall count
+ * This probe fires on every system call entry and increments a counter
+ * for the corresponding process ID (pid) and command name (comm).
+ */
+tracepoint:raw_syscalls:sys_enter
+{
+	@syscalls[pid, comm]++;
+}
+
+/*
+ * 2. Context switch count
+ * This tracepoint fires whenever the kernel scheduler switches tasks on a CPU.
+ * We count how many times each process is the *next* one to be scheduled.
+ */
+tracepoint:sched:sched_switch
+{
+	@switches[args->next_pid, args->next_comm]++;
+	@current_task[pid] = args->next_pid;
+}
+
+/*
+ * 3. Page faults count
+ * This tracepoint fires for page faults that occur in user-space code.
+ */
+tracepoint:exceptions:page_fault_user
+{
+	@page_faults[pid, comm]++;
+}
+
+/*
+ * 4. Total memory allocation
+ * This tracepoint tracks calls to the kernel's memory allocator (kmalloc)
+ * and sums the number of bytes allocated by each process.
+ */
+tracepoint:kmem:kmalloc
+{
+	@mem_alloc[pid, comm] += args->bytes_alloc;
+}
+
+/*
+ * 5. CPU usage (On-CPU time)
+ * This logic calculates the total time a process spends running on the CPU.
+ */
+tracepoint:sched:sched_switch
+{
+	// Record the timestamp when the new process (next_pid) is scheduled in.
+	@last_switched_in[args->next_pid] = nsecs;
+
+	// Check if we have a timestamp for the process being switched out (prev_pid).
+	$last_in = @last_switched_in[args->prev_pid];
+	if ($last_in > 0) {
+		// Calculate the duration it was on-CPU.
+		$on_cpu_ns = nsecs - $last_in;
+		@cpu_time[args->prev_pid, args->prev_comm] += $on_cpu_ns;
+
+		// Clean up the timestamp for the outgoing process to save memory.
+		if (@last_switched_in[args->prev_pid]) {
+		   delete(@last_switched_in[args->prev_pid]);
+		}
+	}
+}
+
+/*
+ * Reporting Interval
+ * This block executes periodically to display the collected data.
+ */
+interval:s:5
+{
+	// Clear the screen for a clean, refreshing 'top'-like output.
+	printf("\033[2J\033[H");
+	printf("Top processes over the last 5 seconds (updated at %s)\n\n", strftime("%H:%M:%S", nsecs));
+
+	printf("--- Top 10 by Syscall Count ---\n");
+	print(@syscalls, 10);
+
+	printf("\n--- Top 10 by Context Switches ---\n");
+	print(@switches, 10);
+
+	printf("\n--- Top 10 by Page Faults ---\n");
+	print(@page_faults, 10);
+
+	printf("\n--- Top 10 by Memory Allocation (bytes) ---\n");
+	print(@mem_alloc, 10);
+
+	printf("\n--- Top 10 by CPU Time (nanoseconds) ---\n");
+	print(@cpu_time, 10);
+
+	// Clear all data maps to start fresh for the next interval.
+	clear(@syscalls);
+	clear(@switches);
+	clear(@page_faults);
+	clear(@mem_alloc);
+	clear(@cpu_time);
+}
+
+END
+{
+	// Final cleanup when the script is terminated (Ctrl-C).
+	clear(@syscalls);
+	clear(@switches);
+	clear(@page_faults);
+	clear(@mem_alloc);
+	clear(@cpu_time);
+	clear(@last_switched_in);
+	printf("Exiting.\n");
+}
+

@@ -1,0 +1,178 @@
+#!/usr/bin/env bpftrace
+
+#ifndef BPFTRACE_HAVE_BTF
+#include <linux/socket.h>
+#include <net/sock.h> // Required for struct sock
+#else
+#define AF_INET 2
+#define AF_INET6 10
+#endif
+
+/*
+ * tcptop.bt - A bpftrace script to summarize TCP traffic by connection.
+ *
+ * This script mimics the core functionality of the bcc-tools 'tcptop'.
+ * It traces TCP send and receive functions in the kernel to measure the
+ * number of bytes transferred for each active connection.
+ *
+ * USAGE: sudo bpftrace tcptop.bt
+ *
+ * OUTPUT FORMAT NOTE:
+ * Unlike the original tcptop, which uses a Python frontend to format output,
+ * this pure bpftrace script cannot merge RX and TX stats onto a single line.
+ * It will display separate maps for received and transmitted bytes.
+ */
+
+
+BEGIN
+{
+	printf("Tracing... Output every 1 sec. Hit Ctrl-C to end.\n");
+}
+
+/*
+ * Trace TCP Receive Path
+ * kprobe:tcp_cleanup_rbuf is a reliable point to trace received data,
+ * as it's called after data is copied to the user-space socket buffer.
+ * The second argument is the number of bytes successfully copied.
+ */
+kprobe:tcp_cleanup_rbuf
+{
+	$sk = (struct sock *)arg0;
+	$copied = (int32)arg1;
+
+	if ($copied <= 0) {
+		return;
+	}
+
+	// Get connection details from the socket struct ('sk').
+	$family = $sk->__sk_common.skc_family;
+	$pid = pid;
+	$comm = comm;
+
+	if ($family == AF_INET) {
+		$saddr = ntop($sk->__sk_common.skc_rcv_saddr);
+		$daddr = ntop($sk->__sk_common.skc_daddr);
+		$sport = $sk->__sk_common.skc_num;
+		$dport = bswap($sk->__sk_common.skc_dport);
+
+		// For received data, the local address is the destination of the packet.
+		@rx_v4[$pid, $comm, $daddr, $dport, $saddr, $sport] = sum($copied);
+
+	} else if ($family == AF_INET6) {
+		$saddr = ntop($sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
+		$daddr = ntop($sk->__sk_common.skc_v6_daddr.in6_u.u6_addr8);
+		$sport = $sk->__sk_common.skc_num;
+		$dport = bswap($sk->__sk_common.skc_dport);
+
+		@rx_v6[$pid, $comm, $daddr, $dport, $saddr, $sport] = sum($copied);
+	}
+}
+
+/*
+ * Trace TCP Send Path - Part 1: Entry
+ * At the function entry, we store the socket pointer ('sk') passed as the
+ * first argument (arg0), keyed by the thread ID (tid).
+ */
+kprobe:tcp_sendmsg
+{
+	@sk[tid] = arg0;
+}
+
+/*
+ * Trace TCP Send Path - Part 2: Return
+ * At the function return, we use the return value ('retval') for the byte
+ * count and retrieve the stored socket pointer from our map.
+ */
+kretprobe:tcp_sendmsg
+{
+	if (retval <= 0) {
+		// Clean up the map even if the send failed.
+		delete(@sk[tid]);
+		return;
+	}
+
+	// Retrieve the socket struct pointer we stored at the kprobe.
+	$sk = (struct sock *)@sk[tid];
+	if ($sk == 0) {
+		// Should not happen, but a safety check.
+		delete(@sk[tid]);
+		return;
+	}
+
+	// Get connection details from the socket struct.
+	$family = $sk->__sk_common.skc_family;
+	$pid = pid;
+	$comm = comm;
+
+	if ($family == AF_INET) {
+		$saddr = ntop($sk->__sk_common.skc_rcv_saddr);
+		$daddr = ntop($sk->__sk_common.skc_daddr);
+		$sport = $sk->__sk_common.skc_num;
+		$dport = bswap($sk->__sk_common.skc_dport);
+
+		// For sent data, the local address is the source of the packet.
+		@tx_v4[$pid, $comm, $saddr, $sport, $daddr, $dport] = sum(retval);
+
+	} else if ($family == AF_INET6) {
+		$saddr = ntop($sk->__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
+		$daddr = ntop($sk->__sk_common.skc_v6_daddr.in6_u.u6_addr8);
+		$sport = $sk->__sk_common.skc_num;
+		$dport = bswap($sk->__sk_common.skc_dport);
+
+		@tx_v6[$pid, $comm, $saddr, $sport, $daddr, $dport] = sum(retval);
+	}
+
+	// Clean up the map entry for this thread.
+	delete(@sk[tid]);
+}
+
+/*
+ * Reporting Interval
+ * This block executes every second to print the collected data.
+ */
+interval:s:1
+{
+	// Clear the screen for a clean, refreshing output.
+	printf("\033[2J\033[H");
+
+	// Print timestamp. The loadavg call was removed for safety.
+	printf("%s\n\n", strftime("%H:%M:%S", nsecs));
+
+	// --- IPv4 SECTION ---
+	printf("--- IPv4 Connections (Bytes Received) ---\n");
+	printf("%-6s %-12s %-22s %-22s %8s\n", "PID", "COMM", "LADDR", "RADDR", "RX_BYTES");
+	print(@rx_v4);
+
+	printf("\n--- IPv4 Connections (Bytes Sent) ---\n");
+	printf("%-6s %-12s %-22s %-22s %8s\n", "PID", "COMM", "LADDR", "RADDR", "TX_BYTES");
+	print(@tx_v4);
+
+
+	// --- IPv6 SECTION ---
+	printf("\n--- IPv6 Connections (Bytes Received) ---\n");
+	printf("%-6s %-12s %-38s %-38s %8s\n", "PID", "COMM", "LADDR6", "RADDR6", "RX_BYTES");
+	print(@rx_v6);
+
+	printf("\n--- IPv6 Connections (Bytes Sent) ---\n");
+	printf("%-6s %-12s %-38s %-38s %8s\n", "PID", "COMM", "LADDR6", "RADDR6", "TX_BYTES");
+	print(@tx_v6);
+
+
+	// Clear maps for the next interval.
+	clear(@rx_v4);
+	clear(@tx_v4);
+	clear(@rx_v6);
+	clear(@tx_v6);
+}
+
+END
+{
+	// Final cleanup.
+	clear(@sk);
+	clear(@rx_v4);
+	clear(@tx_v4);
+	clear(@rx_v6);
+	clear(@tx_v6);
+	printf("Exiting.\n");
+}
+

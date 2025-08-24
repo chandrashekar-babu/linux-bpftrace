@@ -1,0 +1,119 @@
+#!/usr/bin/bpftrace
+
+/*
+ * proc_monitor.bt - Monitor key performance metrics for a specific process.
+ *
+ * This script traces CPU usage, file I/O, and memory allocations for a given
+ * PID and outputs the data in CSV format every second. This format is ideal
+ * for plotting with tools like Python's pandas and matplotlib.
+ *
+ * USAGE: sudo ./proc_monitor.bt <PID>
+ *
+ * EXAMPLE:
+ * # Monitor PID 1234 and save the output to a file
+ * sudo ./proc_monitor.bt 1234 > stats.csv
+ *
+ * # In Python:
+ * import pandas as pd
+ * df = pd.read_csv('stats.csv')
+ * df.plot(x='timestamp', y=['cpu_ns', 'read_bytes', 'write_bytes'])
+ */
+
+BEGIN
+{
+	// Check if a PID was provided as the first argument ($1).
+	if ($1 == 0) {
+		printf("USAGE: sudo ./proc_monitor.bt <PID>\n");
+		exit();
+	}
+
+//	printf("Monitoring PID %d... Outputting CSV. Press Ctrl-C to end.\n", $1);
+
+	// Print the CSV header.
+	printf("timestamp,cpu_ns,read_bytes,write_bytes,alloc_bytes\n");
+}
+
+/*
+ * 1. CPU usage (On-CPU time)
+ * This logic calculates the total time a process spends running on the CPU.
+ */
+tracepoint:sched:sched_switch
+{
+	// Record the timestamp when the target process is scheduled in.
+	if (args->next_pid == (uint64)$1) {
+		@last_switched_in[$1] = nsecs;
+	}
+
+	// If the target process is being switched out, calculate its on-CPU duration.
+	if (args->prev_pid == (uint64)$1) {
+		$last_in = @last_switched_in[$1];
+		if ($last_in > 0) {
+			$on_cpu_ns = nsecs - $last_in;
+			@cpu_time[$1] += $on_cpu_ns;
+			delete(@last_switched_in[$1]);
+		}
+	}
+}
+
+/*
+ * 2. I/O (Bytes Read/Written)
+ * We trace the exit of read/write syscalls to get the number of bytes transferred.
+ */
+tracepoint:syscalls:sys_exit_read
+{
+	if (pid == (uint64)$1 && args->ret > 0) {
+		@reads[$1] += args->ret;
+	}
+}
+
+tracepoint:syscalls:sys_exit_write
+{
+	if (pid == (uint64)$1 && args->ret > 0) {
+		@writes[$1] += args->ret;
+	}
+}
+
+/*
+ * 3. Memory Allocation
+ * This tracepoint tracks calls to the kernel's memory allocator (kmalloc)
+ * made on behalf of the target process.
+ */
+tracepoint:kmem:kmalloc
+{
+	if (pid == $1) {
+		@mem_alloc[$1] += args->bytes_alloc;
+	}
+}
+
+/*
+ * Reporting Interval
+ * This block executes every second to print the collected data as a CSV row.
+ */
+interval:s:1
+{
+	// Get the values from our maps. If a key doesn't exist, bpftrace returns 0.
+	$cpu = @cpu_time[$1];
+	$read = @reads[$1];
+	$write = @writes[$1];
+	$alloc = @mem_alloc[$1];
+
+	// Print the CSV row.
+	printf("%s,%d,%d,%d,%d\n", strftime("%H:%M:%S", nsecs), $cpu, $read, $write, $alloc);
+
+	// Clear all data maps to start fresh for the next interval.
+	clear(@cpu_time);
+	clear(@reads);
+	clear(@writes);
+	clear(@mem_alloc);
+}
+
+END
+{
+	// Final cleanup when the script is terminated (Ctrl-C).
+	clear(@cpu_time);
+	clear(@reads);
+	clear(@writes);
+	clear(@mem_alloc);
+	clear(@last_switched_in);
+}
+

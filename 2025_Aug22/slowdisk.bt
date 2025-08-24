@@ -1,0 +1,76 @@
+#!/usr/bin/bpftrace
+
+/*
+ * slowdisk.bt - A bpftrace script to trace slow block device I/O.
+ *
+ * This tool traces block I/O requests and prints details for any request
+ * that takes longer than a defined threshold (default: 10ms) to complete.
+ * This is useful for identifying storage performance bottlenecks.
+ *
+ * USAGE: sudo bpftrace slowdisk.bt
+ */
+
+// Define the latency threshold in nanoseconds. 10ms = 10,000,000 ns.
+#define LATENCY_THRESHOLD_NS 10000000
+
+BEGIN
+{
+	printf("Tracing block I/O slower than %d ms... Hit Ctrl-C to end.\n",
+	    LATENCY_THRESHOLD_NS / 1000000);
+	printf("%-14s %-6s %-7s %-4s %-8s %s\n", "COMM", "PID", "DEVICE", "T", "BYTES", "LAT(ms)");
+}
+
+/*
+ * Trace when a block request is issued to the device.
+ * We record the start timestamp in a map, keyed by the request pointer,
+ * which uniquely identifies this in-flight I/O.
+ */
+tracepoint:block:block_rq_issue
+{
+	// args->rq is the 'struct request *', a unique identifier for the request.
+	@start[args->rq] = nsecs;
+}
+
+/*
+ * Trace when a block request completes.
+ * We calculate the total latency and print a message if it exceeds our threshold.
+ */
+tracepoint:block:block_rq_complete
+{
+	// Look up the start time for this request.
+	$start_ns = @start[args->rq];
+	if ($start_ns == 0) {
+		// We missed the issue event, so we can't calculate latency.
+		return;
+	}
+
+	// Calculate the duration in nanoseconds.
+	$latency_ns = nsecs - $start_ns;
+
+	if ($latency_ns > LATENCY_THRESHOLD_NS) {
+		// args->dev contains the major:minor device number.
+		// args->rwbs contains flags for Read/Write/Barrier/Sync.
+		// args->nr_sector gives the size of the I/O.
+		// FIX: Replaced devname() with args->dev to print the device number
+		// for compatibility with older bpftrace versions.
+		printf("%-14s %-6d %-7d %-4s %-8d %d\n",
+		    comm,
+		    pid,
+		    args->dev,
+		    str(args->rwbs),
+		    args->nr_sector * 512, // Convert sectors to bytes
+		    $latency_ns / 1000000   // Convert ns to ms
+		);
+	}
+
+	// Clean up the map entry for this completed request.
+	delete(@start[args->rq]);
+}
+
+END
+{
+	// Final cleanup.
+	clear(@start);
+	printf("Exiting.\n");
+}
+

@@ -1,0 +1,176 @@
+#!/usr/bin/env bpftrace
+/*
+  top_proc_live.bt — live “top-like” process dashboard (2s refresh)
+
+  Shows per-interval (delta) tops for:
+    • CPU time on-CPU (ms)
+    • Syscall count
+    • Context switch count
+    • Page faults (minor+major)
+    • Kernel memory allocations (bytes via __kmalloc)  [approximation]
+
+  Run:
+    sudo bpftrace top_proc_live.bt
+
+  Stop with Ctrl-C.
+*/
+
+BEGIN
+{
+  printf("Tracing… (updates every 2s)  Ctrl-C to stop\n");
+/* ===============================
+   CUMULATIVE COUNTERS (per pid,comm)
+   =============================== */
+@syscalls[pid, comm]  = 0;
+@ctxsw[pid, comm]     = 0;
+@faults[pid, comm]    = 0;
+@kalloc[pid, comm]    = 0;
+@cpu_ns[pid, comm]    = 0;
+
+/* Last time a task got CPU, for CPU accounting */
+@last_oncpu[pid, comm] = 0;
+}
+
+
+/* ===============================
+   EVENTS
+   =============================== */
+
+/* Syscalls (user/kernel boundary) */
+tracepoint:syscalls:sys_enter_*
+{
+  @syscalls[pid, comm] += 1;
+}
+
+/* Context switches + CPU time accounting */
+tracepoint:sched:sched_switch
+/ args->prev_pid != 0 /
+{
+  /* charge CPU time to the task being switched out */
+  $pcomm = args->prev_comm;
+  $ppid  = args->prev_pid;
+
+  if (@last_oncpu[$ppid, $pcomm]) {
+    @cpu_ns[$ppid, $pcomm] += nsecs - @last_oncpu[$ppid, $pcomm];
+  }
+
+  @ctxsw[$ppid, $pcomm] += 1;
+
+  /* start timer for the next task being switched in */
+  @last_oncpu[args->next_pid, args->next_comm] = nsecs;
+}
+
+/* Page faults (both user & kernel) */
+tracepoint:exceptions:page_fault_user,
+tracepoint:exceptions:page_fault_kernel
+{
+  @faults[pid, comm] += 1;
+}
+
+/* Kernel allocations (approximate per-process) */
+kprobe:__kmalloc
+{
+  @kalloc[pid, comm] += arg0; /* requested size */
+}
+
+/* ===============================
+   SNAPSHOT / DELTAS / PRINT
+   =============================== */
+
+
+/* Every 2 seconds: compute deltas and print tops */
+interval:s:2
+{
+/* previous snapshots */
+@prev_syscalls[pid, comm];
+@prev_ctxsw[pid, comm];
+@prev_faults[pid, comm];
+@prev_kalloc[pid, comm];
+@prev_cpu_ns[pid, comm];
+
+/* delta maps used only for printing (values are sort keys) */
+@d_syscalls[pid, comm];
+@d_ctxsw[pid, comm];
+@d_faults[pid, comm];
+@d_kalloc[pid, comm];
+@d_cpu_ms[pid, comm];   /* store CPU in ms for readability */
+  /* Close any still-running CPU slices so they count this interval */
+  @cpu_ns[pid, comm] += ( @last_oncpu[pid, comm] ? (nsecs - @last_oncpu[pid, comm]) : 0 );
+  @last_oncpu[pid, comm] = nsecs;
+
+  /* Build per-interval deltas into @d_* */
+  /* NOTE: foreach walks keys observed in the LHS map */
+  for ($s :  @syscalls) {
+    $cur  = @syscalls[$s];
+    $prev = @prev_syscalls[$s];
+    @d_syscalls[$s] = $cur - $prev;
+    @prev_syscalls[$s] = $cur;
+  }
+
+  for ($s : @ctxsw) {
+    $cur  = @ctxsw[$s];
+    $prev = @prev_ctxsw[$s];
+    @d_ctxsw[$s] = $cur - $prev;
+    @prev_ctxsw[$s] = $cur;
+  }
+
+  for ($s : @faults) {
+    $cur  = @faults[$s];
+    $prev = @prev_faults[$s];
+    @d_faults[$s] = $cur - $prev;
+    @prev_faults[$s] = $cur;
+  }
+
+  for ($s : @kalloc) {
+    $cur  = @kalloc[$s];
+    $prev = @prev_kalloc[$s];
+    @d_kalloc[$s] = $cur - $prev;
+    @prev_kalloc[$s] = $cur;
+  }
+
+  for ($s : @cpu_ns) {
+    $cur  = @cpu_ns[$s];
+    $prev = @prev_cpu_ns[$s];
+    /* convert to ms for display */
+    @d_cpu_ms[$s] = ($cur - $prev) / 1000000;
+    @prev_cpu_ns[$s] = $cur;
+  }
+
+  /* Clear screen-ish header */
+  printf("\n===== top-proc (2s window) =====  %s\n", time("%H:%M:%S"));
+  printf("Sorts are by the metric shown (Top 10)\n");
+
+  /* TOP by CPU (ms) */
+  printf("\n-- CPU time (ms) --\n");
+  print(@d_cpu_ms, 10);
+
+  /* TOP by Syscalls */
+  printf("\n-- Syscalls --\n");
+  print(@d_syscalls, 10);
+
+  /* TOP by Context Switches */
+  printf("\n-- Context Switches --\n");
+  print(@d_ctxsw, 10);
+
+  /* TOP by Page Faults */
+  printf("\n-- Page Faults --\n");
+  print(@d_faults, 10);
+
+  /* TOP by Kernel Alloc (bytes) */
+  printf("\n-- Kernel Alloc (bytes) --\n");
+  print(@d_kalloc, 10);
+
+  /* Clean the delta maps for the next interval window (optional) */
+  clear(@d_cpu_ms);
+  clear(@d_syscalls);
+  clear(@d_ctxsw);
+  clear(@d_faults);
+  clear(@d_kalloc);
+}
+
+/* Final line on exit */
+END
+{
+  printf("\nDone.\n");
+}
+

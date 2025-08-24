@@ -1,0 +1,11 @@
+#!/usr/bin/env bpftrace
+
+// Modern approach with BTF
+tracepoint:sched:sched_process_exec {
+  $task = (struct task_struct *)curtask;
+  $mm = $task->mm;
+  if ($mm != 0) {
+    printf("Process: %s, VMSize: %lu KB\n", 
+      comm, $mm->total_vm * 4);
+  }
+}

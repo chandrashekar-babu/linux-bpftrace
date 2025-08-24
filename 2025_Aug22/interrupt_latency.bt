@@ -1,0 +1,14 @@
+#!/usr/bin/env bpftrace
+
+kprobe:e1000_intr {
+	@["intr_start"] = nsecs;
+}
+
+kretprobe:e1000_intr {
+	$duration = nsecs - @["intr_start"];
+	printf("duration: %d\n", $duration);
+}
+
+END {
+	delete(@["intr_start"]);
+}

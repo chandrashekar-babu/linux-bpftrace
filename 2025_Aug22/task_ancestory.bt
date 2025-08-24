@@ -1,0 +1,20 @@
+#!/usr/bin/env bpftrace
+
+BEGIN {
+  printf("%-16s %-7s %-7s %-7s %s\n", 
+    "COMM", "PID", "PPID", "GPID", "GGPID");
+}
+
+tracepoint:sched:sched_process_fork {
+  $task = (struct task_struct *)curtask;
+  $parent = $task->parent;
+  $grandparent = $parent->parent;
+  $great_grandparent = $grandparent->parent;
+  
+  printf("%-16s %-7d %-7d %-7d %d\n",
+    $task->comm,
+    $task->tgid,
+    $parent->tgid,
+    $grandparent->tgid,
+    $great_grandparent->tgid);
+}

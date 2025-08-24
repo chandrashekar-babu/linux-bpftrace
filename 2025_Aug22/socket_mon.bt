@@ -1,0 +1,29 @@
+#!/usr/bin/env bpftrace
+
+// Define a custom struct for socket monitoring
+
+struct sock_data {
+  u32 pid;
+  u32 saddr;
+  u32 daddr;
+  u16 sport;
+  u16 dport;
+  u32 state;
+  u64 tx_bytes;
+  u64 rx_bytes;
+};
+
+// Track TCP socket creation
+kprobe:tcp_connect {
+  $sk = (struct sock *)arg0;
+  $inet_sk = (struct inet_sock *)$sk;
+  
+  $key = (u64)$sk;
+  $sk->pid = pid;
+  $sk.saddr = $inet_sk->inet_saddr;
+  $sk.daddr = $inet_sk->inet_daddr;
+  $sk.sport = $inet_sk->inet_sport;
+  $sk.dport = $inet_sk->inet_dport;
+  $sk.state = $sk->__sk_common.skc_state;
+  @sock_stats[$key] = $sk
+}

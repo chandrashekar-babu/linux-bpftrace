@@ -1,0 +1,22 @@
+#!/usr/bin/env bpftrace
+
+// Legacy approach for older kernels
+
+#ifndef BPFTRACE_HAVE_BTF
+#include <linux/sched.h>
+#include <linux/mm_types.h>
+#endif
+
+tracepoint:sched:sched_process_exec {
+ $task = (struct task_struct *)curtask;
+ $mm_offset = offsetof(struct task_struct, mm);
+ $mm = (struct mm_struct *) ($task + $mm_offset);
+ if ($mm != 0) {
+    $vm_offset = offsetof(struct mm_struct, 
+                          total_vm);
+    $total_vm = *((uint64 *) ($mm + $vm_offset));
+    printf("Process: %s, VMSize: %lu KB\n", 
+                      comm, $total_vm * 4);
+ }
+}
+
